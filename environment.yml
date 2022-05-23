@@ -1,0 +1,12 @@
+name: goldx
+channels:
+  - pytorch
+dependencies:
+  - python=3.10
+  - pytorch=1.11.*
+  - torchvision=0.12.*
+  - cudatoolkit=11.3
+  - captum=0.5.*
+  - pip
+  - pip:
+    - foolbox==3.3.3
