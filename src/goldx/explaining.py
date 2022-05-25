@@ -1,10 +1,27 @@
-from captum.attr import GuidedBackprop, visualization
+import numpy as np
+from captum.attr._utils.visualization import _normalize_image_attr
 
 
-def explain(model, inputs, targets):
-    guided = GuidedBackprop(model)
-    attributions = guided.attribute(inputs, targets)
-    for attr, image, target in zip(attributions, inputs, targets):
-        fig, ax = visualization.visualize_image_attr(attr, image)
+def explain(*, Method, model, inputs, targets, args):
 
-    return fig, ax
+    inputs = inputs.cpu()
+
+    explainer = Method(model)
+    attributions = (
+        explainer.attribute(inputs, target=targets, **args)
+        .squeeze()
+        .cpu()
+        .detach()
+        .numpy()
+    )
+
+    # Average over channels.
+
+    if True:
+        attributions = _normalize_image_attr(
+            np.transpose(attributions, (1, 2, 0)), sign="positive"
+        )
+    else:
+        attributions = attributions.mean(axis=0)
+
+    return attributions

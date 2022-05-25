@@ -14,16 +14,7 @@ def value_and_grad(
 ) -> Tuple[ep.Tensor, ep.Tensor]:
     value, grad = ep.value_and_grad(loss_fn, x)
 
-    print(grad.dtype)
-
-    print(f"{type(grad) = }, {type(self.mask) = }")
-    print(f"{grad.dtype = }, {self.mask.dtype = }")
-
-    print(grad)
-
     grad = grad * self.mask
-
-    print(grad.dtype)
 
     return value, grad
 
@@ -33,6 +24,6 @@ LinfBasicIterativeAttack.value_and_grad = value_and_grad
 
 def attack_image_with_mask(fmodel, image, label, mask):
     attack = LinfBasicIterativeAttack()
-    attack.mask = torch.from_numpy(np.array(mask))
+    attack.mask = torch.from_numpy(np.array(mask)).to(fmodel.device)
 
-    return attack(fmodel, image, label, epsilons=0.3)
+    return attack(fmodel, image, label, epsilons=0.6)
