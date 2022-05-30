@@ -6,6 +6,7 @@ import foolbox.models
 import numpy as np
 import torch
 from captum.attr import IntegratedGradients, Occlusion, Saliency
+from matplotlib import pyplot as plt
 from PIL import Image
 from torchvision.transforms import functional
 
@@ -23,7 +24,7 @@ def prepare_ground_truths(
     fmodel: foolbox.models.Model,
 ):
     for filename in os.listdir(source_directory):
-        if filename.endswith(".jpg"):
+        if any([filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg"]]):
             file_path = source_directory / filename
             image = Image.open(file_path)
             # Resize such that the shorter side is image_size.
@@ -176,7 +177,98 @@ def compute_explanations(
                     iou = intersection / union
 
                     # Save iou.
-                    target_path = path / f"{label}-explanation-iou.txt"
+                    target_path = path / f"{label}-{method_name}-iou.txt"
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(target_path, "w") as f:
                         f.write(str(iou))
+
+
+def compare_explanations_for_one_example(*, directory: Path, target: int):
+    original_path = directory / f"original.png"
+    original_image = Image.open(original_path)
+
+    attacked_path = directory / f"{target}-attacked.png"
+    attacked_image = Image.open(attacked_path)
+
+    gold_path = directory / f"{target}-mask.png"
+    gold_image = Image.open(gold_path)
+
+    explanations = dict()
+    for filename in os.listdir(directory):
+        if filename.endswith("-mask.png"):
+            splits = filename.split("-")
+            if len(splits) != 3:
+                continue
+            label = int(splits[0])
+
+            if label != target:
+                continue
+
+            method = splits[1]
+
+            explanation_path = directory / f"{target}-{method}.png"
+            explanation_image = Image.open(explanation_path)
+
+            explanation_mask_path = directory / f"{target}-{method}-mask.png"
+            explanation_mask_image = Image.open(explanation_mask_path)
+
+            iou_path = directory / f"{target}-{method}-iou.txt"
+            with open(iou_path, "r") as f:
+                iou = float(f.read())
+
+            explanations[method] = (
+                explanation_image,
+                explanation_mask_image,
+                iou,
+            )
+
+    n_methods = len(explanations)
+
+    fig, axes = plt.subplots(
+        nrows=2,
+        ncols=n_methods + 1,
+        figsize=(n_methods * 3, 6),
+        gridspec_kw={"height_ratios": [1, 1]},
+    )
+
+    axes[0, 0].imshow(attacked_image)
+    axes[0, 0].set_title(f"Attacked Image\n{target}: {CLASS_NAMES[target]}")
+    axes[0, 0].axis("off")
+
+    axes[1, 0].imshow(gold_image)
+    axes[1, 0].set_title("Ground Truth")
+    axes[1, 0].axis("off")
+
+    for i, (method, (explanation, explanation_mask, iou)) in enumerate(
+        explanations.items()
+    ):
+        axes[0, i + 1].imshow(explanation, cmap="gray")
+        axes[0, i + 1].set_title(method)
+        axes[0, i + 1].axis("off")
+
+        axes[1, i + 1].imshow(explanation_mask, cmap="gray")
+        axes[1, i + 1].set_title(f"IoU w/ Ground Truth\n{iou:.2f}")
+        axes[1, i + 1].axis("off")
+
+    fig.tight_layout()
+    fig.savefig(directory / f"{target}-plot.png")
+
+
+def compare_explanations(*, directory: Path):
+    for image_name in os.listdir(directory):
+        image_dir = directory / image_name
+
+        # Skip files.
+        if not image_dir.is_dir():
+            continue
+
+        # Determine prepared target labels.
+        targets = set()
+        for filename in os.listdir(image_dir):
+            if filename.endswith("-attacked.png"):
+                target = int(filename.split("-")[0])
+                targets.add(target)
+
+        # Compare explanations for each target.
+        for target in sorted(list(targets)):
+            compare_explanations_for_one_example(directory=image_dir, target=target)

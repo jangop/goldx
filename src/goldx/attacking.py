@@ -26,4 +26,4 @@ def attack_image_with_mask(fmodel, image, label, mask):
     attack = LinfBasicIterativeAttack()
     attack.mask = torch.from_numpy(np.array(mask)).to(fmodel.device)
 
-    return attack(fmodel, image, label, epsilons=0.6)
+    return attack(fmodel, image, label, epsilons=0.05)

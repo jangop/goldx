@@ -33,3 +33,5 @@ goldx.pipeline.compute_explanations(
     model=model2,
     evaluation_directory=evaluation_directory,
 )
+
+goldx.pipeline.compare_explanations(directory=gold_directory)
