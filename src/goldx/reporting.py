@@ -2,12 +2,14 @@
 
 Per case: one figure showing original, attacked image, amplified perturbation,
 and every heatmap with the ground-truth mask outlined and its scores in the
-title. Per run: ``results.csv`` (written by the pipeline), ``summary.png``,
-and ``RESULTS.md``.
+title. Per run: ``results.csv`` (written by the pipeline), ``summary.svg``
+(theme-aware), and ``RESULTS.md``.
 """
 
 import csv
+import io
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,35 @@ from PIL import Image
 from .imagenet import CLASS_NAMES
 
 logger = logging.getLogger(__name__)
+
+# Charts are saved as theme-aware SVGs: transparent background, all text and
+# axes drawn in this sentinel color, which is then rewritten to currentColor
+# with a prefers-color-scheme stylesheet — so GitHub renders them legibly in
+# both light and dark mode.
+_SENTINEL_COLOR = "#010203"
+_THEME_STYLE = (
+    "<style>"
+    ":root{color:#1f2328}"
+    "@media (prefers-color-scheme:dark){:root{color:#e6edf3}}"
+    "</style>"
+)
+_CHART_RC: dict[Any, Any] = {
+    "text.color": _SENTINEL_COLOR,
+    "axes.edgecolor": _SENTINEL_COLOR,
+    "axes.labelcolor": _SENTINEL_COLOR,
+    "xtick.color": _SENTINEL_COLOR,
+    "ytick.color": _SENTINEL_COLOR,
+    "svg.fonttype": "none",
+}
+
+
+def _save_theme_aware_svg(fig: Any, path: Path) -> None:
+    buffer = io.StringIO()
+    fig.savefig(buffer, format="svg", transparent=True)
+    svg = buffer.getvalue().replace(_SENTINEL_COLOR, "currentColor")
+    svg = re.sub(r"(<svg\b[^>]*>)", r"\1" + _THEME_STYLE, svg, count=1)
+    path.write_text(svg)
+
 
 BASELINE_KINDS = {"baseline", "oracle"}
 
@@ -68,55 +99,59 @@ def render_case_figure(
     records = sorted(records, key=lambda r: -float(r["iou"]))
     n_columns = max(4, len(records))
 
-    fig, axes = plt.subplots(nrows=2, ncols=n_columns, figsize=(n_columns * 2.6, 5.8))
-    for ax in axes.flat:
-        ax.axis("off")
-
-    confidence = float(records[0]["confidence"]) if records else float("nan")
-    context = [
-        (original, f"Original\n{original_label}", {}),
-        (attacked, f"Attacked\n{target_label} ({confidence:.0%})", {}),
-        (
-            _amplified_difference(attacked, original),
-            "Perturbation\n(amplified)",
-            {"cmap": "coolwarm", "vmin": 0, "vmax": 1},
-        ),
-        (mask, "Ground truth", {"cmap": "gray"}),
-    ]
-    for ax, (image, title, kwargs) in zip(axes[0], context, strict=False):
-        ax.imshow(image, **kwargs)
-        ax.set_title(title, fontsize=9)
-
-    for ax, record in zip(axes[1], records, strict=False):
-        name = record["method"]
-        heatmap = np.array(Image.open(directory / f"{target}-{name}.png"))
-        top_k = np.array(Image.open(directory / f"{target}-{name}-mask.png"))
-
-        ax.imshow(heatmap, cmap="gray")
-        # Method's own top-k selection in green, ground truth outline in red.
-        overlay = np.zeros((*top_k.shape, 4))
-        overlay[top_k != 0] = (0.0, 0.8, 0.2, 0.45)
-        ax.imshow(overlay)
-        ax.contour(mask, levels=[127], colors="red", linewidths=2.0)
-
-        kind = str(record["kind"])
-        suffix = f" ({kind})" if kind in BASELINE_KINDS else ""
-        ax.set_title(
-            f"{name}{suffix}\n"
-            f"IoU {float(record['iou']):.2f} · "
-            f"mass {float(record['relevance_mass']):.2f} · "
-            f"AUC {float(record['auc']):.2f}",
-            fontsize=8,
+    # Mid-gray text reads on both GitHub themes; background stays transparent.
+    with plt.rc_context({"text.color": "#888888"}):
+        fig, axes = plt.subplots(
+            nrows=2, ncols=n_columns, figsize=(n_columns * 2.6, 5.8)
         )
+        for ax in axes.flat:
+            ax.axis("off")
 
-    fig.suptitle(
-        f"{directory.name} → {target_label}   "
-        "(green = method top-k, red = ground truth)",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    fig.savefig(directory / f"{target}-plot.png", dpi=150)
-    plt.close(fig)
+        confidence = float(records[0]["confidence"]) if records else float("nan")
+        context = [
+            (original, f"Original\n{original_label}", {}),
+            (attacked, f"Attacked\n{target_label} ({confidence:.0%})", {}),
+            (
+                _amplified_difference(attacked, original),
+                "Perturbation\n(amplified)",
+                {"cmap": "coolwarm", "vmin": 0, "vmax": 1},
+            ),
+            (mask, "Ground truth", {"cmap": "gray"}),
+        ]
+        for ax, (image, title, kwargs) in zip(axes[0], context, strict=False):
+            ax.imshow(image, **kwargs)
+            ax.set_title(title, fontsize=9)
+
+        for ax, record in zip(axes[1], records, strict=False):
+            name = record["method"]
+            heatmap = np.array(Image.open(directory / f"{target}-{name}.png"))
+            top_k = np.array(Image.open(directory / f"{target}-{name}-mask.png"))
+
+            ax.imshow(heatmap, cmap="gray")
+            # Method's own top-k selection in green, ground truth outline in red.
+            overlay = np.zeros((*top_k.shape, 4))
+            overlay[top_k != 0] = (0.0, 0.8, 0.2, 0.45)
+            ax.imshow(overlay)
+            ax.contour(mask, levels=[127], colors="red", linewidths=2.0)
+
+            kind = str(record["kind"])
+            suffix = f" ({kind})" if kind in BASELINE_KINDS else ""
+            ax.set_title(
+                f"{name}{suffix}\n"
+                f"IoU {float(record['iou']):.2f} · "
+                f"mass {float(record['relevance_mass']):.2f} · "
+                f"AUC {float(record['auc']):.2f}",
+                fontsize=8,
+            )
+
+        fig.suptitle(
+            f"{directory.name} → {target_label}   "
+            "(green = method top-k, red = ground truth)",
+            fontsize=10,
+        )
+        fig.tight_layout()
+        fig.savefig(directory / f"{target}-plot.png", dpi=150, transparent=True)
+        plt.close(fig)
 
 
 def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
@@ -145,30 +180,32 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
 
     # Bar chart: standard methods blue, contrastive regime teal,
     # model-blind baselines gray, oracle hatched.
-    fig, ax = plt.subplots(figsize=(7, 0.5 * len(rows) + 1.5))
-    colors = KIND_COLORS
-    for i, row in enumerate(rows):
-        ax.barh(
-            i,
-            row["iou_mean"],
-            xerr=row["iou_std"],
-            color=colors.get(str(row["kind"]), "#2b6cb0"),
-            hatch="//" if row["kind"] == "oracle" else None,
-        )
-        ax.text(
-            row["iou_mean"] + row["iou_std"] + 0.01,
-            i,
-            f"{row['iou_mean']:.2f}",
-            va="center",
-            fontsize=9,
-        )
-    ax.set_yticks(range(len(rows)), [str(row["method"]) for row in rows])
-    ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
-    ax.set_xlim(0, 1)
-    ax.set_title(f"GoldX summary — {len({r['case'] for r in records})} cases")
-    fig.tight_layout()
-    fig.savefig(gold_directory / "summary.png", dpi=150)
-    plt.close(fig)
+    with plt.rc_context(_CHART_RC):
+        fig, ax = plt.subplots(figsize=(7, 0.5 * len(rows) + 1.5))
+        for i, row in enumerate(rows):
+            ax.barh(
+                i,
+                row["iou_mean"],
+                xerr=row["iou_std"],
+                color=KIND_COLORS.get(str(row["kind"]), "#2b6cb0"),
+                hatch="//" if row["kind"] == "oracle" else None,
+                error_kw={"ecolor": _SENTINEL_COLOR},
+            )
+            ax.text(
+                row["iou_mean"] + row["iou_std"] + 0.01,
+                i,
+                f"{row['iou_mean']:.2f}",
+                va="center",
+                fontsize=9,
+            )
+        ax.set_yticks(range(len(rows)), [str(row["method"]) for row in rows])
+        ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
+        ax.set_xlim(0, 1)
+        n_cases = len({(r["case"], r["target"]) for r in records})
+        ax.set_title(f"GoldX summary — {n_cases} cases")
+        fig.tight_layout()
+        _save_theme_aware_svg(fig, gold_directory / "summary.svg")
+        plt.close(fig)
 
     lines = [
         "# GoldX Results",
@@ -187,7 +224,7 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         "Kinds: *method* sees only model + attacked image. *baseline* is "
         "model-blind. *oracle* reads the clean reference image (upper bound).",
         "",
-        "![summary](summary.png)",
+        "![summary](summary.svg)",
     ]
     (gold_directory / "RESULTS.md").write_text("\n".join(lines) + "\n")
 
@@ -228,25 +265,34 @@ def render_comparison(
     )
     labels = list(summaries)
 
-    fig, ax = plt.subplots(figsize=(8, 0.45 * len(methods) * len(labels) + 1.5))
-    bar_height = 0.8 / len(labels)
-    for column, label in enumerate(labels):
-        positions = [
-            i + (column - (len(labels) - 1) / 2) * bar_height
-            for i in range(len(methods))
-        ]
-        means = [summaries[label].get(m, {}).get("mean", 0.0) for m in methods]
-        stds = [summaries[label].get(m, {}).get("std", 0.0) for m in methods]
-        ax.barh(positions, means, height=bar_height * 0.9, xerr=stds, label=label)
-    ax.set_yticks(range(len(methods)), methods)
-    ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
-    ax.set_xlim(0, 1)
-    ax.legend(loc="lower right")
-    ax.set_title("GoldX model comparison")
-    fig.tight_layout()
-    output_directory.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_directory / "comparison.png", dpi=150)
-    plt.close(fig)
+    with plt.rc_context(_CHART_RC):
+        fig, ax = plt.subplots(figsize=(8, 0.45 * len(methods) * len(labels) + 1.5))
+        bar_height = 0.8 / len(labels)
+        for column, label in enumerate(labels):
+            positions = [
+                i + (column - (len(labels) - 1) / 2) * bar_height
+                for i in range(len(methods))
+            ]
+            means = [summaries[label].get(m, {}).get("mean", 0.0) for m in methods]
+            stds = [summaries[label].get(m, {}).get("std", 0.0) for m in methods]
+            ax.barh(
+                positions,
+                means,
+                height=bar_height * 0.9,
+                xerr=stds,
+                label=label,
+                error_kw={"ecolor": _SENTINEL_COLOR},
+            )
+        ax.set_yticks(range(len(methods)), methods)
+        ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
+        ax.set_xlim(0, 1)
+        legend = ax.legend(loc="lower right")
+        legend.get_frame().set_alpha(0)
+        ax.set_title("GoldX model comparison")
+        fig.tight_layout()
+        output_directory.mkdir(parents=True, exist_ok=True)
+        _save_theme_aware_svg(fig, output_directory / "comparison.svg")
+        plt.close(fig)
 
     header = "| Method | Kind | " + " | ".join(labels) + " |"
     divider = "|---|---|" + "---|" * len(labels)
@@ -263,7 +309,7 @@ def render_comparison(
         lines.append(
             f"| {method} | {kinds.get(method, '?')} | " + " | ".join(cells) + " |"
         )
-    lines += ["", "![comparison](comparison.png)"]
+    lines += ["", "![comparison](comparison.svg)"]
     (output_directory / "COMPARISON.md").write_text("\n".join(lines) + "\n")
 
 
