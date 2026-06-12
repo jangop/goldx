@@ -13,6 +13,34 @@ Note that I did so before for a publication, with limited scope [[Göpfert et al
 
 Eventually, I would like to provide a tool to evaluate further explanation methods, but for now I am going to focus my limited programming skills on a broad evaluation.
 
+## How It Works
+
+1. **Attack** — pick an image, pick a random target class, and run a targeted
+   L∞ BIM attack whose perturbation is confined to a random elliptical mask.
+   The mask *is* the ground-truth explanation: only pixels inside it changed,
+   so only they can explain the new prediction.
+2. **Explain** — run Captum methods (Saliency, Integrated Gradients, Occlusion)
+   on the attacked image for the target class.
+3. **Score** — binarize each heatmap (top-k pixels, k = mask size) and compute
+   its IoU with the ground-truth mask.
+
+## Usage
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```console
+$ uv sync
+$ mkdir -p data/source   # drop .png/.jpg images here
+$ uv run python main.py  # results land in data/gold/
+```
+
+Development:
+
+```console
+$ uv run pre-commit install
+$ uv run pytest
+```
+
 ## Early Results
 ### Small Perturbations
 ![](examples/bee-755-plot.png)

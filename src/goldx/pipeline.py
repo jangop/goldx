@@ -1,19 +1,72 @@
-import os
+"""End-to-end pipeline: attack images, explain, score against ground truth."""
+
+import logging
 import random
 from pathlib import Path
+from typing import Any
 
-import foolbox.models
 import numpy as np
 import torch
 from captum.attr import IntegratedGradients, Occlusion, Saliency
 from matplotlib import pyplot as plt
 from PIL import Image
-from torchvision.transforms import functional
 
 from .attacking import attack_image_with_mask
 from .explaining import explain
 from .imagenet import CLASS_NAMES
 from .masking import generate_mask, mask_matrix
+from .metrics import intersection_over_union
+
+logger = logging.getLogger(__name__)
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+
+EXPLANATION_METHODS: list[tuple[type, dict[str, Any]]] = [
+    (Saliency, {}),
+    (IntegratedGradients, {}),
+    (
+        Occlusion,
+        {
+            "sliding_window_shapes": (3, 32, 32),
+            "strides": (3, 32, 32),
+        },
+    ),
+]
+
+
+def _to_tensor(image: Image.Image) -> torch.Tensor:
+    """PIL RGB image -> float tensor (C, H, W) in [0, 1]."""
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    return torch.from_numpy(array).permute(2, 0, 1)
+
+
+def _to_image(tensor: torch.Tensor) -> Image.Image:
+    """Float tensor (C, H, W) in [0, 1] -> PIL RGB image."""
+    array = tensor.clamp(0, 1).mul(255).round().byte().permute(1, 2, 0).cpu().numpy()
+    return Image.fromarray(array)
+
+
+def _heatmap_to_image(heatmap: np.ndarray) -> Image.Image:
+    """Float array (H, W) in [0, 1] -> grayscale PIL image."""
+    return Image.fromarray((heatmap * 255).round().astype(np.uint8), mode="L")
+
+
+def _resize_and_crop(image: Image.Image, size: int) -> Image.Image:
+    """Resize so the shorter side is ``size``, then crop the center square."""
+    width, height = image.size
+    if width < height:
+        image = image.resize(
+            (size, round(height * size / width)), Image.Resampling.LANCZOS
+        )
+    else:
+        image = image.resize(
+            (round(width * size / height), size), Image.Resampling.LANCZOS
+        )
+
+    width, height = image.size
+    left = (width - size) // 2
+    top = (height - size) // 2
+    return image.crop((left, top, left + size, top + size))
 
 
 def prepare_ground_truths(
@@ -21,208 +74,132 @@ def prepare_ground_truths(
     source_directory: Path,
     target_directory: Path,
     image_size: int,
-    fmodel: foolbox.models.Model,
-):
-    for filename in os.listdir(source_directory):
-        if any([filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg"]]):
-            file_path = source_directory / filename
-            image = Image.open(file_path)
-            # Resize such that the shorter side is image_size.
-            width, height = image.size
-            if width < height:
-                image = image.resize(
-                    (image_size, int(height * image_size / width)), Image.ANTIALIAS
-                )
-            else:
-                image = image.resize(
-                    (int(width * image_size / height), image_size), Image.ANTIALIAS
-                )
+    model: torch.nn.Module,
+    min_mask_area: float = 0.1,
+    max_mask_area: float = 0.1,
+    max_attempts: int = 5,
+) -> None:
+    """Attack each source image inside a random mask and save the results.
 
-            # Crop center.
-            width, height = image.size
-            left = (width - image_size) // 2
-            top = (height - image_size) // 2
-            right = left + image_size
-            bottom = top + image_size
-            image = image.crop((left, top, right, bottom))
+    ``model`` must accept images in [0, 1] (see ``NormalizedModel``). Each
+    attempt draws a fresh random target class and mask; images where no
+    attempt produces a successful attack are skipped.
+    """
+    device = next(model.parameters()).device
 
-            # Predict.
-            tensor = functional.to_tensor(image).to(fmodel.device)
-            batch = tensor.unsqueeze(0)
-            prediction = fmodel(batch)
-            label = prediction.argmax(dim=1).item()
+    for file_path in sorted(source_directory.iterdir()):
+        if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
 
-            # Save.
-            target_path = target_directory / filename / "original.png"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            image.save(target_path)
+        image = _resize_and_crop(Image.open(file_path).convert("RGB"), image_size)
+        batch = _to_tensor(image).unsqueeze(0).to(device)
 
-            # Save prediction.
-            target_path = target_directory / filename / "original-label.txt"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(target_path, "w") as f:
-                f.write(CLASS_NAMES[label])
+        with torch.no_grad():
+            label = int(model(batch).argmax(dim=1).item())
 
-            # Select random target label.
+        for _ in range(max_attempts):
             target_label = label
             while target_label == label:
-                target_label = random.randint(0, 1000)
+                target_label = random.randrange(len(CLASS_NAMES))
 
-            # Generate mask.
-            mask = generate_mask(image_size, image_size, min_area=0.1, max_area=0.1)
+            mask = generate_mask(
+                image_size, image_size, min_area=min_mask_area, max_area=max_mask_area
+            )
+            mask_tensor = torch.from_numpy(np.array(mask))
 
-            # Attack original.
-            adv1, adv2, suc = attack_image_with_mask(
-                fmodel,
+            adversarial, success = attack_image_with_mask(
+                model,
                 batch,
-                torch.tensor([target_label], dtype=torch.long, device=fmodel.device),
-                mask,
+                torch.tensor([target_label], dtype=torch.long, device=device),
+                mask_tensor,
             )
-
-            # Save adversarial.
-            attacked_image = functional.to_pil_image(adv1.squeeze_(0))
-            target_path = target_directory / filename / f"{target_label}-attacked.png"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            attacked_image.save(target_path)
-
-            # Save mask.
-            target_path = target_directory / filename / f"{target_label}-mask.png"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            mask.save(target_path)
-
-            # Save label name.
-            target_path = target_directory / filename / f"{target_label}-label.txt"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(target_path, "w") as f:
-                f.write(CLASS_NAMES[target_label])
-
-
-def compute_explanations(
-    *,
-    fmodel: foolbox.models.Model,
-    model: torch.nn.Module,
-    gold_directory: Path,
-    evaluation_directory: Path,
-):
-    methods = [
-        (Saliency, {}),
-        (IntegratedGradients, {}),
-        (
-            Occlusion,
-            {
-                "sliding_window_shapes": (3, 32, 32),
-                "strides": (3, 32, 32),
-            },
-        ),
-    ]
-
-    for name in os.listdir(gold_directory):
-        path = gold_directory / name
-        for filename in os.listdir(path):
-            if filename.endswith("-attacked.png"):
-                label = int(filename.split("-")[0])
-                image_path = path / filename
-                mask_path = path / f"{label}-mask.png"
-
-                # Load image.
-                attacked_image = Image.open(image_path)
-                attacked_tensor = functional.to_tensor(attacked_image).to(fmodel.device)
-                attacked_singular_batch = attacked_tensor.unsqueeze(0)
-                preprocessed_singular_batch = fmodel._preprocess(
-                    attacked_singular_batch
-                ).raw
-
-                # Explain.
-                for method, args in methods:
-                    method_name = method.__name__
-                    attributions = explain(
-                        model=model,
-                        inputs=preprocessed_singular_batch,
-                        targets=label,
-                        Method=method,
-                        args=args,
-                    )
-                    explanation = functional.to_pil_image(
-                        torch.tensor(attributions), mode="L"
-                    )
-                    target_path = path / f"{label}-{method_name}.png"
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    explanation.save(target_path)
-
-                    # Load mask.
-                    mask = Image.open(mask_path)
-                    mask_array = np.array(mask)
-                    n_pixels_in_mask = np.count_nonzero(mask_array)
-
-                    # Set brightest k pixels in explanation to white, and black everywhere else.
-                    explanation_mask_array = mask_matrix(
-                        np.array(explanation), k=n_pixels_in_mask
-                    )
-
-                    # Save explanation mask.
-                    target_path = path / f"{label}-{method_name}-mask.png"
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    explanation_mask_array = Image.fromarray(
-                        explanation_mask_array, mode="L"
-                    )
-                    explanation_mask_array.save(target_path)
-
-                    # Compute intersection over union of mask and explanation_mask_array.
-                    intersection = np.sum(
-                        np.logical_and(np.array(explanation_mask_array), np.array(mask))
-                    )
-                    union = np.sum(
-                        np.logical_or(np.array(explanation_mask_array), np.array(mask))
-                    )
-                    iou = intersection / union
-
-                    # Save iou.
-                    target_path = path / f"{label}-{method_name}-iou.txt"
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(target_path, "w") as f:
-                        f.write(str(iou))
-
-
-def compare_explanations_for_one_example(*, directory: Path, target: int):
-    original_path = directory / f"original.png"
-    original_image = Image.open(original_path)
-
-    attacked_path = directory / f"{target}-attacked.png"
-    attacked_image = Image.open(attacked_path)
-
-    gold_path = directory / f"{target}-mask.png"
-    gold_image = Image.open(gold_path)
-
-    explanations = dict()
-    for filename in os.listdir(directory):
-        if filename.endswith("-mask.png"):
-            splits = filename.split("-")
-            if len(splits) != 3:
-                continue
-            label = int(splits[0])
-
-            if label != target:
-                continue
-
-            method = splits[1]
-
-            explanation_path = directory / f"{target}-{method}.png"
-            explanation_image = Image.open(explanation_path)
-
-            explanation_mask_path = directory / f"{target}-{method}-mask.png"
-            explanation_mask_image = Image.open(explanation_mask_path)
-
-            iou_path = directory / f"{target}-{method}-iou.txt"
-            with open(iou_path, "r") as f:
-                iou = float(f.read())
-
-            explanations[method] = (
-                explanation_image,
-                explanation_mask_image,
-                iou,
+            if success:
+                break
+        else:
+            logger.warning(
+                "no successful attack for %s after %d attempts, skipping",
+                file_path.name,
+                max_attempts,
             )
+            continue
+
+        case_directory = target_directory / file_path.name
+        case_directory.mkdir(parents=True, exist_ok=True)
+
+        image.save(case_directory / "original.png")
+        (case_directory / "original-label.txt").write_text(CLASS_NAMES[label])
+        _to_image(adversarial.squeeze(0)).save(
+            case_directory / f"{target_label}-attacked.png"
+        )
+        mask.save(case_directory / f"{target_label}-mask.png")
+        (case_directory / f"{target_label}-label.txt").write_text(
+            CLASS_NAMES[target_label]
+        )
+
+
+def compute_explanations(*, model: torch.nn.Module, gold_directory: Path) -> None:
+    """Explain each attacked image and score the explanation against its mask.
+
+    ``model`` must be the same [0, 1]-space model used for the attack.
+    """
+    device = next(model.parameters()).device
+
+    for case_directory in sorted(gold_directory.iterdir()):
+        if not case_directory.is_dir():
+            continue
+        for image_path in sorted(case_directory.glob("*-attacked.png")):
+            label = int(image_path.name.split("-")[0])
+
+            attacked_image = Image.open(image_path).convert("RGB")
+            batch = _to_tensor(attacked_image).unsqueeze(0).to(device)
+
+            mask_array = np.array(Image.open(case_directory / f"{label}-mask.png"))
+            n_pixels_in_mask = int(np.count_nonzero(mask_array))
+
+            for method, args in EXPLANATION_METHODS:
+                method_name = method.__name__
+                heatmap = explain(
+                    method=method,
+                    model=model,
+                    inputs=batch,
+                    targets=label,
+                    args=args,
+                )
+                _heatmap_to_image(heatmap).save(
+                    case_directory / f"{label}-{method_name}.png"
+                )
+
+                # Binarize: brightest k pixels, k = ground-truth mask size.
+                explanation_mask = mask_matrix(heatmap, k=n_pixels_in_mask)
+                Image.fromarray(explanation_mask, mode="L").save(
+                    case_directory / f"{label}-{method_name}-mask.png"
+                )
+
+                iou = intersection_over_union(explanation_mask, mask_array)
+                (case_directory / f"{label}-{method_name}-iou.txt").write_text(str(iou))
+
+
+def compare_explanations_for_one_example(*, directory: Path, target: int) -> None:
+    attacked_image = Image.open(directory / f"{target}-attacked.png")
+    gold_image = Image.open(directory / f"{target}-mask.png")
+
+    explanations = {}
+    for mask_path in sorted(directory.glob(f"{target}-*-mask.png")):
+        splits = mask_path.name.split("-")
+        if len(splits) != 3:
+            continue
+        method = splits[1]
+
+        explanation_image = Image.open(directory / f"{target}-{method}.png")
+        explanation_mask_image = Image.open(mask_path)
+        iou = float((directory / f"{target}-{method}-iou.txt").read_text())
+
+        explanations[method] = (explanation_image, explanation_mask_image, iou)
 
     n_methods = len(explanations)
+    if n_methods == 0:
+        logger.warning("no explanations found in %s for target %d", directory, target)
+        return
 
     fig, axes = plt.subplots(
         nrows=2,
@@ -252,23 +229,19 @@ def compare_explanations_for_one_example(*, directory: Path, target: int):
 
     fig.tight_layout()
     fig.savefig(directory / f"{target}-plot.png")
+    plt.close(fig)
 
 
-def compare_explanations(*, directory: Path):
-    for image_name in os.listdir(directory):
-        image_dir = directory / image_name
-
-        # Skip files.
-        if not image_dir.is_dir():
+def compare_explanations(*, directory: Path) -> None:
+    for case_directory in sorted(directory.iterdir()):
+        if not case_directory.is_dir():
             continue
 
-        # Determine prepared target labels.
-        targets = set()
-        for filename in os.listdir(image_dir):
-            if filename.endswith("-attacked.png"):
-                target = int(filename.split("-")[0])
-                targets.add(target)
-
-        # Compare explanations for each target.
-        for target in sorted(list(targets)):
-            compare_explanations_for_one_example(directory=image_dir, target=target)
+        targets = {
+            int(path.name.split("-")[0])
+            for path in case_directory.glob("*-attacked.png")
+        }
+        for target in sorted(targets):
+            compare_explanations_for_one_example(
+                directory=case_directory, target=target
+            )

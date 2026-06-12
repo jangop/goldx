@@ -1,37 +1,35 @@
+"""Run the full GoldX pipeline on images in data/source."""
+
+import logging
 from pathlib import Path
 
-import foolbox
+import torch
 import torchvision
 
 import goldx
 
-model = torchvision.models.vgg16(pretrained=True)
-model.eval()
+logging.basicConfig(level=logging.INFO)
 
-model2 = torchvision.models.vgg16(pretrained=True)
-model2.eval()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-preprocessing = dict(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], axis=-3)
-bounds = (0, 1)
-
-fmodel = foolbox.PyTorchModel(model, bounds=bounds, preprocessing=preprocessing)
+backbone = torchvision.models.vgg16(
+    weights=torchvision.models.VGG16_Weights.IMAGENET1K_V1
+)
+model = goldx.NormalizedModel(backbone).to(device).eval()
 
 source_directory = Path("data/source")
 gold_directory = Path("data/gold")
-evaluation_directory = Path("data/evaluation")
 
 goldx.pipeline.prepare_ground_truths(
     source_directory=source_directory,
     target_directory=gold_directory,
-    fmodel=fmodel,
     image_size=224,
+    model=model,
 )
 
 goldx.pipeline.compute_explanations(
+    model=model,
     gold_directory=gold_directory,
-    fmodel=fmodel,
-    model=model2,
-    evaluation_directory=evaluation_directory,
 )
 
 goldx.pipeline.compare_explanations(directory=gold_directory)
