@@ -22,6 +22,9 @@ dependencies = [
     "torchvision>=0.21",
 ]
 
+[project.scripts]
+goldx = "goldx.cli:main"
+
 [project.urls]
 Source = "https://github.com/jangop/goldx"
 "Bug Reports" = "https://github.com/jangop/goldx/issues"

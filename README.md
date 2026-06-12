@@ -31,8 +31,19 @@ Requires [uv](https://docs.astral.sh/uv/).
 ```console
 $ uv sync
 $ mkdir -p data/source   # drop .png/.jpg images here
-$ uv run python main.py  # results land in data/gold/
+$ uv run goldx run --model resnet18 --attacks-per-image 2
+$ uv run goldx report data/gold                      # re-render figures
+$ uv run goldx compare r18=data/gold-r18 vit=data/gold-vit --output data
 ```
+
+`goldx run` writes everything into the gold directory (default `data/gold`):
+per-case artifacts and figures, `results.csv`, `RESULTS.md`, `summary.png`.
+Models: `resnet18`, `resnet50`, `vgg16`, `vit_b_16`.
+
+Each Captum method is evaluated in two regimes: **standard** (attribute the
+target logit) and **contrastive** (attribute the *target − original* logit
+difference — the "why t rather than y" question that the ground truth
+actually answers).
 
 Development:
 

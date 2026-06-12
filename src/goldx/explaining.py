@@ -6,6 +6,26 @@ import numpy as np
 import torch
 
 
+class ContrastiveLogit(torch.nn.Module):
+    """Score "why ``target`` rather than ``reference``" as a logit difference.
+
+    GoldX's ground truth is causal for the prediction *flip*, not for the
+    prediction itself — context outside the mask legitimately supports the
+    target class. Attributing the (target - reference) logit asks the
+    question the intervention actually answers. Attribute with ``target=0``.
+    """
+
+    def __init__(self, model: torch.nn.Module, target: int, reference: int) -> None:
+        super().__init__()
+        self.model = model
+        self.target = target
+        self.reference = reference
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        logits = self.model(x)
+        return (logits[:, self.target] - logits[:, self.reference]).unsqueeze(1)
+
+
 def normalize_attributions(
     attributions: np.ndarray, *, percentile: float = 98.0
 ) -> np.ndarray:

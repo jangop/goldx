@@ -12,7 +12,7 @@ from PIL import Image
 
 from .attacking import attack_image_with_mask
 from .baselines import diff_oracle_heatmap, highpass_heatmap, random_heatmap
-from .explaining import explain
+from .explaining import ContrastiveLogit, explain
 from .imagenet import CLASS_NAMES
 from .masking import generate_mask, mask_matrix
 from .metrics import intersection_over_union, pixel_auc, relevance_mass
@@ -24,7 +24,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 EXPLANATION_METHODS: list[tuple[type, dict[str, Any]]] = [
     (Saliency, {}),
-    (IntegratedGradients, {}),
+    (IntegratedGradients, {"n_steps": 20}),
     (
         Occlusion,
         {
@@ -79,13 +79,15 @@ def prepare_ground_truths(
     min_mask_area: float = 0.1,
     max_mask_area: float = 0.1,
     max_attempts: int = 5,
+    attacks_per_image: int = 1,
 ) -> None:
-    """Attack each source image inside a random mask and save the results.
+    """Attack each source image inside random masks and save the results.
 
-    ``model`` must accept images in [0, 1] (see ``NormalizedModel``). Each
-    attempt draws a fresh random target class and mask. Success is verified
-    on the uint8-quantized image that will actually be saved — quantization
-    can undo a marginal attack. Images with no successful attempt are skipped.
+    ``model`` must accept images in [0, 1] (see ``NormalizedModel``). Each of
+    the ``attacks_per_image`` attacks draws fresh random target classes and
+    masks (up to ``max_attempts`` tries each). Success is verified on the
+    uint8-quantized image that will actually be saved — quantization can undo
+    a marginal attack. Attacks that never succeed are skipped with a warning.
     """
     device = next(model.parameters()).device
 
@@ -99,50 +101,68 @@ def prepare_ground_truths(
         with torch.no_grad():
             label = int(model(batch).argmax(dim=1).item())
 
-        for _ in range(max_attempts):
-            target_label = label
-            while target_label == label:
-                target_label = random.randrange(len(CLASS_NAMES))
+        used_targets = {label}
+        successes = 0
+        for _ in range(attacks_per_image):
+            for _ in range(max_attempts):
+                target_label = label
+                while target_label in used_targets:
+                    target_label = random.randrange(len(CLASS_NAMES))
 
-            mask = generate_mask(
-                image_size, image_size, min_area=min_mask_area, max_area=max_mask_area
-            )
-            mask_tensor = torch.from_numpy(np.array(mask))
+                mask = generate_mask(
+                    image_size,
+                    image_size,
+                    min_area=min_mask_area,
+                    max_area=max_mask_area,
+                )
+                mask_tensor = torch.from_numpy(np.array(mask))
 
-            adversarial, success = attack_image_with_mask(
-                model,
-                batch,
-                torch.tensor([target_label], dtype=torch.long, device=device),
-                mask_tensor,
-            )
-            if not success:
+                adversarial, success = attack_image_with_mask(
+                    model,
+                    batch,
+                    torch.tensor([target_label], dtype=torch.long, device=device),
+                    mask_tensor,
+                )
+                if not success:
+                    continue
+
+                # Verify survival of the uint8 quantization applied on save.
+                attacked_image = _to_image(adversarial.squeeze(0))
+                quantized = _to_tensor(attacked_image).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    quantized_prediction = int(model(quantized).argmax(dim=1).item())
+                if quantized_prediction == target_label:
+                    break
+                logger.info(
+                    "attack on %s undone by quantization, retrying", file_path.name
+                )
+            else:
+                logger.warning(
+                    "no successful attack for %s after %d attempts",
+                    file_path.name,
+                    max_attempts,
+                )
                 continue
 
-            # Verify survival of the uint8 quantization applied on save.
-            attacked_image = _to_image(adversarial.squeeze(0))
-            quantized = _to_tensor(attacked_image).unsqueeze(0).to(device)
-            with torch.no_grad():
-                quantized_prediction = int(model(quantized).argmax(dim=1).item())
-            if quantized_prediction == target_label:
-                break
-            logger.info("attack on %s undone by quantization, retrying", file_path.name)
-        else:
-            logger.warning(
-                "no successful attack for %s after %d attempts, skipping",
-                file_path.name,
-                max_attempts,
+            used_targets.add(target_label)
+            successes += 1
+
+            case_directory = target_directory / file_path.name
+            case_directory.mkdir(parents=True, exist_ok=True)
+
+            image.save(case_directory / "original.png")
+            (case_directory / "original-label.txt").write_text(CLASS_NAMES[label])
+            attacked_image.save(case_directory / f"{target_label}-attacked.png")
+            mask.save(case_directory / f"{target_label}-mask.png")
+            (case_directory / f"{target_label}-label.txt").write_text(
+                CLASS_NAMES[target_label]
             )
-            continue
 
-        case_directory = target_directory / file_path.name
-        case_directory.mkdir(parents=True, exist_ok=True)
-
-        image.save(case_directory / "original.png")
-        (case_directory / "original-label.txt").write_text(CLASS_NAMES[label])
-        attacked_image.save(case_directory / f"{target_label}-attacked.png")
-        mask.save(case_directory / f"{target_label}-mask.png")
-        (case_directory / f"{target_label}-label.txt").write_text(
-            CLASS_NAMES[target_label]
+        logger.info(
+            "%s: %d/%d attacks succeeded",
+            file_path.name,
+            successes,
+            attacks_per_image,
         )
 
 
@@ -152,15 +172,34 @@ def _case_heatmaps(
     batch: torch.Tensor,
     original: torch.Tensor,
     target: int,
+    reference: int,
     seed: int,
 ) -> dict[str, tuple[str, np.ndarray]]:
-    """All heatmaps for one case: Captum methods, then calibration baselines."""
+    """All heatmaps for one case.
+
+    Two regimes per Captum method: standard ("why class t?") and contrastive
+    ("why t rather than the original class?" — the question the ground truth
+    actually answers), then the calibration baselines.
+    """
     heatmaps: dict[str, tuple[str, np.ndarray]] = {}
+    contrastive_model = ContrastiveLogit(model, target=target, reference=reference)
     for method, args in EXPLANATION_METHODS:
-        heatmap = explain(
-            method=method, model=model, inputs=batch, targets=target, args=args
+        heatmaps[method.__name__] = (
+            "method",
+            explain(
+                method=method, model=model, inputs=batch, targets=target, args=args
+            ),
         )
-        heatmaps[method.__name__] = ("method", heatmap)
+        heatmaps[f"Contrastive{method.__name__}"] = (
+            "contrastive",
+            explain(
+                method=method,
+                model=contrastive_model,
+                inputs=batch,
+                targets=0,
+                args=args,
+            ),
+        )
 
     attacked = batch.squeeze(0)
     height, width = attacked.shape[1:]
@@ -210,6 +249,9 @@ def compute_explanations(
                 )
                 continue
 
+            with torch.no_grad():
+                reference = int(model(original.unsqueeze(0)).argmax(dim=1).item())
+
             mask_array = np.array(Image.open(case_directory / f"{target}-mask.png"))
             n_pixels_in_mask = int(np.count_nonzero(mask_array))
 
@@ -218,6 +260,7 @@ def compute_explanations(
                 batch=batch,
                 original=original,
                 target=target,
+                reference=reference,
                 seed=target,
             )
             for name, (kind, heatmap) in heatmaps.items():

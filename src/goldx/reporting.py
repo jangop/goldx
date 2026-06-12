@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 BASELINE_KINDS = {"baseline", "oracle"}
 
+KIND_COLORS = {
+    "method": "#2b6cb0",
+    "contrastive": "#2c7a7b",
+    "baseline": "#a0aec0",
+    "oracle": "#718096",
+}
+
 
 def load_records(gold_directory: Path) -> list[dict[str, Any]]:
     with (gold_directory / "results.csv").open(newline="") as f:
@@ -136,9 +143,10 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         )
     rows.sort(key=lambda row: row["iou_mean"])
 
-    # Bar chart: methods blue, model-blind baselines gray, oracle hatched.
+    # Bar chart: standard methods blue, contrastive regime teal,
+    # model-blind baselines gray, oracle hatched.
     fig, ax = plt.subplots(figsize=(7, 0.5 * len(rows) + 1.5))
-    colors = {"method": "#2b6cb0", "baseline": "#a0aec0", "oracle": "#718096"}
+    colors = KIND_COLORS
     for i, row in enumerate(rows):
         ax.barh(
             i,
@@ -182,6 +190,81 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         "![summary](summary.png)",
     ]
     (gold_directory / "RESULTS.md").write_text("\n".join(lines) + "\n")
+
+
+def render_comparison(
+    named_directories: dict[str, Path], output_directory: Path
+) -> None:
+    """Cross-model comparison from finished runs: grouped bars + table.
+
+    ``named_directories`` maps a display label (e.g. model name) to the gold
+    directory of a finished run.
+    """
+    summaries: dict[str, dict[str, dict[str, Any]]] = {}
+    kinds: dict[str, str] = {}
+    for label, directory in named_directories.items():
+        by_method: dict[str, list[float]] = defaultdict(list)
+        for record in load_records(directory):
+            by_method[record["method"]].append(float(record["iou"]))
+            kinds[record["method"]] = str(record["kind"])
+        summaries[label] = {
+            method: {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "n": len(values),
+            }
+            for method, values in by_method.items()
+        }
+
+    methods = sorted(
+        {method for summary in summaries.values() for method in summary},
+        key=lambda method: np.mean(
+            [
+                summary[method]["mean"]
+                for summary in summaries.values()
+                if method in summary
+            ]
+        ),
+    )
+    labels = list(summaries)
+
+    fig, ax = plt.subplots(figsize=(8, 0.45 * len(methods) * len(labels) + 1.5))
+    bar_height = 0.8 / len(labels)
+    for column, label in enumerate(labels):
+        positions = [
+            i + (column - (len(labels) - 1) / 2) * bar_height
+            for i in range(len(methods))
+        ]
+        means = [summaries[label].get(m, {}).get("mean", 0.0) for m in methods]
+        stds = [summaries[label].get(m, {}).get("std", 0.0) for m in methods]
+        ax.barh(positions, means, height=bar_height * 0.9, xerr=stds, label=label)
+    ax.set_yticks(range(len(methods)), methods)
+    ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
+    ax.set_xlim(0, 1)
+    ax.legend(loc="lower right")
+    ax.set_title("GoldX model comparison")
+    fig.tight_layout()
+    output_directory.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_directory / "comparison.png", dpi=150)
+    plt.close(fig)
+
+    header = "| Method | Kind | " + " | ".join(labels) + " |"
+    divider = "|---|---|" + "---|" * len(labels)
+    lines = ["# GoldX Model Comparison", "", header, divider]
+    for method in reversed(methods):
+        cells = []
+        for label in labels:
+            entry = summaries[label].get(method)
+            cells.append(
+                f"{entry['mean']:.3f} ± {entry['std']:.3f} (n={entry['n']})"
+                if entry
+                else "—"
+            )
+        lines.append(
+            f"| {method} | {kinds.get(method, '?')} | " + " | ".join(cells) + " |"
+        )
+    lines += ["", "![comparison](comparison.png)"]
+    (output_directory / "COMPARISON.md").write_text("\n".join(lines) + "\n")
 
 
 def render_report(
