@@ -75,6 +75,3 @@ Per-case view — green is the method's top-k selection, red the ground truth:
 
 Each run writes `results.csv`, `RESULTS.md`, `summary.png`, and one such plot
 per case into the gold directory.
-
-*Results from before 2026-06 were produced with an untargeted-attack bug and
-are invalid; they have been removed.*
