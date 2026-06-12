@@ -41,10 +41,29 @@ $ uv run pre-commit install
 $ uv run pytest
 ```
 
-## Early Results
-### Small Perturbations
-![](examples/bee-755-plot.png)
-![](examples/snails-719-plot.png)
-### Large Perturbations
-![](examples/bee-383-plot.png)
-![](examples/snails-820-plot.png)
+## Results
+
+Three calibration references accompany every run: **Random** (chance floor,
+IoU ≈ 0.05 at 10% mask area), **HighPass** (a model-blind Laplacian filter —
+any method that doesn't beat it is only detecting perturbation noise, not
+explaining the model), and **DiffOracle** (pixel difference to the clean
+image — privileged information, the ceiling).
+
+Smoke run, ResNet-18, 3 images ([full table](examples/RESULTS.md)):
+
+![](examples/summary.png)
+
+Occlusion clearly beats the noise detector; Integrated Gradients does not —
+on pixel AUC it scores *below* HighPass. Treat gradient-method results on
+this benchmark with suspicion.
+
+Per-case view — green is the method's top-k selection, red the ground truth:
+
+![](examples/bee-958-plot.png)
+![](examples/snail-652-plot.png)
+
+Each run writes `results.csv`, `RESULTS.md`, `summary.png`, and one such plot
+per case into the gold directory.
+
+*Results from before 2026-06 were produced with an untargeted-attack bug and
+are invalid; they have been removed.*

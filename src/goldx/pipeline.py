@@ -8,14 +8,15 @@ from typing import Any
 import numpy as np
 import torch
 from captum.attr import IntegratedGradients, Occlusion, Saliency
-from matplotlib import pyplot as plt
 from PIL import Image
 
 from .attacking import attack_image_with_mask
+from .baselines import diff_oracle_heatmap, highpass_heatmap, random_heatmap
 from .explaining import explain
 from .imagenet import CLASS_NAMES
 from .masking import generate_mask, mask_matrix
-from .metrics import intersection_over_union
+from .metrics import intersection_over_union, pixel_auc, relevance_mass
+from .reporting import write_records
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ def prepare_ground_truths(
     """Attack each source image inside a random mask and save the results.
 
     ``model`` must accept images in [0, 1] (see ``NormalizedModel``). Each
-    attempt draws a fresh random target class and mask; images where no
-    attempt produces a successful attack are skipped.
+    attempt draws a fresh random target class and mask. Success is verified
+    on the uint8-quantized image that will actually be saved — quantization
+    can undo a marginal attack. Images with no successful attempt are skipped.
     """
     device = next(model.parameters()).device
 
@@ -113,8 +115,17 @@ def prepare_ground_truths(
                 torch.tensor([target_label], dtype=torch.long, device=device),
                 mask_tensor,
             )
-            if success:
+            if not success:
+                continue
+
+            # Verify survival of the uint8 quantization applied on save.
+            attacked_image = _to_image(adversarial.squeeze(0))
+            quantized = _to_tensor(attacked_image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                quantized_prediction = int(model(quantized).argmax(dim=1).item())
+            if quantized_prediction == target_label:
                 break
+            logger.info("attack on %s undone by quantization, retrying", file_path.name)
         else:
             logger.warning(
                 "no successful attack for %s after %d attempts, skipping",
@@ -128,120 +139,108 @@ def prepare_ground_truths(
 
         image.save(case_directory / "original.png")
         (case_directory / "original-label.txt").write_text(CLASS_NAMES[label])
-        _to_image(adversarial.squeeze(0)).save(
-            case_directory / f"{target_label}-attacked.png"
-        )
+        attacked_image.save(case_directory / f"{target_label}-attacked.png")
         mask.save(case_directory / f"{target_label}-mask.png")
         (case_directory / f"{target_label}-label.txt").write_text(
             CLASS_NAMES[target_label]
         )
 
 
-def compute_explanations(*, model: torch.nn.Module, gold_directory: Path) -> None:
-    """Explain each attacked image and score the explanation against its mask.
+def _case_heatmaps(
+    *,
+    model: torch.nn.Module,
+    batch: torch.Tensor,
+    original: torch.Tensor,
+    target: int,
+    seed: int,
+) -> dict[str, tuple[str, np.ndarray]]:
+    """All heatmaps for one case: Captum methods, then calibration baselines."""
+    heatmaps: dict[str, tuple[str, np.ndarray]] = {}
+    for method, args in EXPLANATION_METHODS:
+        heatmap = explain(
+            method=method, model=model, inputs=batch, targets=target, args=args
+        )
+        heatmaps[method.__name__] = ("method", heatmap)
 
-    ``model`` must be the same [0, 1]-space model used for the attack.
+    attacked = batch.squeeze(0)
+    height, width = attacked.shape[1:]
+    rng = np.random.default_rng(seed)
+    heatmaps["Random"] = ("baseline", random_heatmap(height, width, rng))
+    heatmaps["HighPass"] = ("baseline", highpass_heatmap(attacked))
+    heatmaps["DiffOracle"] = ("oracle", diff_oracle_heatmap(attacked, original))
+    return heatmaps
+
+
+def compute_explanations(
+    *, model: torch.nn.Module, gold_directory: Path
+) -> list[dict[str, Any]]:
+    """Explain each attacked image and score everything against its mask.
+
+    ``model`` must be the same [0, 1]-space model used for the attack. The
+    attacked image is re-verified after the PNG round trip; cases where the
+    attack no longer holds are skipped. Returns one record per
+    (case, target, heatmap) and writes them to ``results.csv``.
     """
     device = next(model.parameters()).device
+    records: list[dict[str, Any]] = []
 
     for case_directory in sorted(gold_directory.iterdir()):
         if not case_directory.is_dir():
             continue
         for image_path in sorted(case_directory.glob("*-attacked.png")):
-            label = int(image_path.name.split("-")[0])
+            target = int(image_path.name.split("-")[0])
 
             attacked_image = Image.open(image_path).convert("RGB")
             batch = _to_tensor(attacked_image).unsqueeze(0).to(device)
+            original = _to_tensor(
+                Image.open(case_directory / "original.png").convert("RGB")
+            ).to(device)
 
-            mask_array = np.array(Image.open(case_directory / f"{label}-mask.png"))
+            with torch.no_grad():
+                probabilities = model(batch).softmax(dim=1).squeeze(0)
+            prediction = int(probabilities.argmax().item())
+            confidence = float(probabilities[target].item())
+            if prediction != target:
+                logger.warning(
+                    "%s: attack did not survive the round trip "
+                    "(predicts %d, expected %d), skipping",
+                    image_path,
+                    prediction,
+                    target,
+                )
+                continue
+
+            mask_array = np.array(Image.open(case_directory / f"{target}-mask.png"))
             n_pixels_in_mask = int(np.count_nonzero(mask_array))
 
-            for method, args in EXPLANATION_METHODS:
-                method_name = method.__name__
-                heatmap = explain(
-                    method=method,
-                    model=model,
-                    inputs=batch,
-                    targets=label,
-                    args=args,
-                )
-                _heatmap_to_image(heatmap).save(
-                    case_directory / f"{label}-{method_name}.png"
-                )
+            heatmaps = _case_heatmaps(
+                model=model,
+                batch=batch,
+                original=original,
+                target=target,
+                seed=target,
+            )
+            for name, (kind, heatmap) in heatmaps.items():
+                _heatmap_to_image(heatmap).save(case_directory / f"{target}-{name}.png")
 
                 # Binarize: brightest k pixels, k = ground-truth mask size.
-                explanation_mask = mask_matrix(heatmap, k=n_pixels_in_mask)
-                Image.fromarray(explanation_mask, mode="L").save(
-                    case_directory / f"{label}-{method_name}-mask.png"
+                top_k = mask_matrix(heatmap, k=n_pixels_in_mask)
+                Image.fromarray(top_k, mode="L").save(
+                    case_directory / f"{target}-{name}-mask.png"
                 )
 
-                iou = intersection_over_union(explanation_mask, mask_array)
-                (case_directory / f"{label}-{method_name}-iou.txt").write_text(str(iou))
+                records.append(
+                    {
+                        "case": case_directory.name,
+                        "target": target,
+                        "method": name,
+                        "kind": kind,
+                        "iou": intersection_over_union(top_k, mask_array),
+                        "relevance_mass": relevance_mass(heatmap, mask_array),
+                        "auc": pixel_auc(heatmap, mask_array),
+                        "confidence": confidence,
+                    }
+                )
 
-
-def compare_explanations_for_one_example(*, directory: Path, target: int) -> None:
-    attacked_image = Image.open(directory / f"{target}-attacked.png")
-    gold_image = Image.open(directory / f"{target}-mask.png")
-
-    explanations = {}
-    for mask_path in sorted(directory.glob(f"{target}-*-mask.png")):
-        splits = mask_path.name.split("-")
-        if len(splits) != 3:
-            continue
-        method = splits[1]
-
-        explanation_image = Image.open(directory / f"{target}-{method}.png")
-        explanation_mask_image = Image.open(mask_path)
-        iou = float((directory / f"{target}-{method}-iou.txt").read_text())
-
-        explanations[method] = (explanation_image, explanation_mask_image, iou)
-
-    n_methods = len(explanations)
-    if n_methods == 0:
-        logger.warning("no explanations found in %s for target %d", directory, target)
-        return
-
-    fig, axes = plt.subplots(
-        nrows=2,
-        ncols=n_methods + 1,
-        figsize=(n_methods * 3, 6),
-        gridspec_kw={"height_ratios": [1, 1]},
-    )
-
-    axes[0, 0].imshow(attacked_image)
-    axes[0, 0].set_title(f"Attacked Image\n{target}: {CLASS_NAMES[target]}")
-    axes[0, 0].axis("off")
-
-    axes[1, 0].imshow(gold_image)
-    axes[1, 0].set_title("Ground Truth")
-    axes[1, 0].axis("off")
-
-    for i, (method, (explanation, explanation_mask, iou)) in enumerate(
-        explanations.items()
-    ):
-        axes[0, i + 1].imshow(explanation, cmap="gray")
-        axes[0, i + 1].set_title(method)
-        axes[0, i + 1].axis("off")
-
-        axes[1, i + 1].imshow(explanation_mask, cmap="gray")
-        axes[1, i + 1].set_title(f"IoU w/ Ground Truth\n{iou:.2f}")
-        axes[1, i + 1].axis("off")
-
-    fig.tight_layout()
-    fig.savefig(directory / f"{target}-plot.png")
-    plt.close(fig)
-
-
-def compare_explanations(*, directory: Path) -> None:
-    for case_directory in sorted(directory.iterdir()):
-        if not case_directory.is_dir():
-            continue
-
-        targets = {
-            int(path.name.split("-")[0])
-            for path in case_directory.glob("*-attacked.png")
-        }
-        for target in sorted(targets):
-            compare_explanations_for_one_example(
-                directory=case_directory, target=target
-            )
+    write_records(gold_directory, records)
+    return records
