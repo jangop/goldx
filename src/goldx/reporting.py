@@ -7,6 +7,7 @@ title. Per run: ``results.parquet`` (written by the pipeline), ``summary.svg``
 """
 
 import io
+import json
 import logging
 import re
 from collections import defaultdict
@@ -38,6 +39,7 @@ RESULTS_SCHEMA = pa.schema(
     ]
 )
 RESULTS_FILENAME = "results.parquet"
+MANIFEST_FILENAME = "run.json"
 
 # Charts are saved as theme-aware SVGs: transparent background, all text and
 # axes drawn in this sentinel color, which is then rewritten to currentColor
@@ -89,6 +91,33 @@ def write_records(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         return
     table = pa.Table.from_pylist(records, schema=RESULTS_SCHEMA)
     pq.write_table(table, gold_directory / RESULTS_FILENAME)
+
+
+def write_manifest(gold_directory: Path, manifest: dict[str, Any]) -> None:
+    gold_directory.mkdir(parents=True, exist_ok=True)
+    (gold_directory / MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, indent=2) + "\n"
+    )
+
+
+def load_manifest(gold_directory: Path) -> dict[str, Any] | None:
+    path = gold_directory / MANIFEST_FILENAME
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def _n_cases(records: list[dict[str, Any]]) -> int:
+    """Distinct (case, target) pairs that reached scoring."""
+    return len({(r["case"], r["target"]) for r in records})
+
+
+def _success_label(gold_directory: Path, records: list[dict[str, Any]]) -> str | None:
+    """``"15/18"`` if a run manifest records the attempt count, else None."""
+    manifest = load_manifest(gold_directory)
+    if manifest is None:
+        return None
+    return f"{_n_cases(records)}/{manifest['attack_attempts']}"
 
 
 def _amplified_difference(attacked: np.ndarray, original: np.ndarray) -> np.ndarray:
@@ -220,15 +249,26 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         ax.set_yticks(range(len(rows)), [str(row["method"]) for row in rows])
         ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
         ax.set_xlim(0, 1)
-        n_cases = len({(r["case"], r["target"]) for r in records})
-        ax.set_title(f"GoldX summary — {n_cases} cases")
+        n_cases = _n_cases(records)
+        success = _success_label(gold_directory, records)
+        title = f"GoldX summary — {n_cases} cases"
+        if success is not None:
+            title += f" ({success} attacks succeeded)"
+        ax.set_title(title)
         fig.tight_layout()
         _save_theme_aware_svg(fig, gold_directory / "summary.svg")
         plt.close(fig)
 
-    lines = [
-        "# GoldX Results",
-        "",
+    lines = ["# GoldX Results", ""]
+    manifest = load_manifest(gold_directory)
+    if manifest is not None:
+        lines += [
+            f"**Attack success:** {n_cases}/{manifest['attack_attempts']} "
+            f"({manifest['source_images']} source images, "
+            f"{manifest['attacks_per_image']} attacks each).",
+            "",
+        ]
+    lines += [
         "| Method | Kind | n | IoU | Relevance mass | Pixel AUC |",
         "|---|---|---|---|---|---|",
     ]
@@ -258,9 +298,12 @@ def render_comparison(
     """
     summaries: dict[str, dict[str, dict[str, Any]]] = {}
     kinds: dict[str, str] = {}
+    success: dict[str, str | None] = {}
     for label, directory in named_directories.items():
+        records = load_records(directory)
+        success[label] = _success_label(directory, records)
         by_method: dict[str, list[float]] = defaultdict(list)
-        for record in load_records(directory):
+        for record in records:
             by_method[record["method"]].append(float(record["iou"]))
             kinds[record["method"]] = str(record["kind"])
         summaries[label] = {
@@ -284,6 +327,10 @@ def render_comparison(
     )
     labels = list(summaries)
 
+    def display(label: str) -> str:
+        rate = success[label]
+        return f"{label} ({rate} attacks)" if rate else label
+
     with plt.rc_context(_CHART_RC):
         fig, ax = plt.subplots(figsize=(8, 0.45 * len(methods) * len(labels) + 1.5))
         bar_height = 0.8 / len(labels)
@@ -299,7 +346,7 @@ def render_comparison(
                 means,
                 height=bar_height * 0.9,
                 xerr=stds,
-                label=label,
+                label=display(label),
                 error_kw={"ecolor": _SENTINEL_COLOR},
             )
         ax.set_yticks(range(len(methods)), methods)
@@ -316,6 +363,9 @@ def render_comparison(
     header = "| Method | Kind | " + " | ".join(labels) + " |"
     divider = "|---|---|" + "---|" * len(labels)
     lines = ["# GoldX Model Comparison", "", header, divider]
+    if any(success[label] for label in labels):
+        rates = [success[label] or "—" for label in labels]
+        lines.append("| **Attack success** | — | " + " | ".join(rates) + " |")
     for method in reversed(methods):
         cells = []
         for label in labels:

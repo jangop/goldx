@@ -1,5 +1,7 @@
 # GoldX Results
 
+**Attack success:** 15/18 (9 source images, 2 attacks each).
+
 | Method | Kind | n | IoU | Relevance mass | Pixel AUC |
 |---|---|---|---|---|---|
 | DiffOracle | oracle | 15 | 0.972 ± 0.009 | 1.000 | 0.993 |

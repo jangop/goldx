@@ -2,6 +2,7 @@
 
 | Method | Kind | resnet18 | resnet50 | vit_b_16 |
 |---|---|---|---|---|
+| **Attack success** | — | 15/18 | 6/18 | 17/18 |
 | DiffOracle | oracle | 0.972 ± 0.009 (n=15) | 0.964 ± 0.009 (n=6) | 0.975 ± 0.010 (n=17) |
 | Occlusion | method | 0.553 ± 0.081 (n=15) | 0.489 ± 0.105 (n=6) | 0.473 ± 0.141 (n=17) |
 | ContrastiveOcclusion | contrastive | 0.527 ± 0.105 (n=15) | 0.488 ± 0.062 (n=6) | 0.487 ± 0.124 (n=17) |

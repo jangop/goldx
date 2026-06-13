@@ -16,7 +16,7 @@ from .explaining import ContrastiveLogit, explain
 from .imagenet import CLASS_NAMES
 from .masking import generate_mask, mask_matrix
 from .metrics import intersection_over_union, pixel_auc, relevance_mass
-from .reporting import write_records
+from .reporting import write_manifest, write_records
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +90,13 @@ def prepare_ground_truths(
     a marginal attack. Attacks that never succeed are skipped with a warning.
     """
     device = next(model.parameters()).device
+    source_images = 0
+    attack_successes = 0
 
     for file_path in sorted(source_directory.iterdir()):
         if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
+        source_images += 1
 
         image = _resize_and_crop(Image.open(file_path).convert("RGB"), image_size)
         batch = _to_tensor(image).unsqueeze(0).to(device)
@@ -158,12 +161,23 @@ def prepare_ground_truths(
                 CLASS_NAMES[target_label]
             )
 
+        attack_successes += successes
         logger.info(
             "%s: %d/%d attacks succeeded",
             file_path.name,
             successes,
             attacks_per_image,
         )
+
+    write_manifest(
+        target_directory,
+        {
+            "source_images": source_images,
+            "attacks_per_image": attacks_per_image,
+            "attack_attempts": source_images * attacks_per_image,
+            "attack_successes": attack_successes,
+        },
+    )
 
 
 def _case_heatmaps(
