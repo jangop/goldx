@@ -35,14 +35,16 @@ def test_n_cases_counts_distinct_case_target() -> None:
     assert _n_cases(records) == 3
 
 
-def test_success_label_uses_attempts_denominator(tmp_path: Path) -> None:
-    write_manifest(tmp_path, {"attack_attempts": 18})
-    records = [
-        {"case": "a", "target": 1},
-        {"case": "b", "target": 2},
-    ]
-    assert _success_label(tmp_path, records) == "2/18"
+def test_success_label_is_successes_over_attempts(tmp_path: Path) -> None:
+    write_manifest(tmp_path, {"attack_attempts": 18, "attack_successes": 15})
+    assert _success_label(tmp_path) == "15/18"
 
 
 def test_success_label_none_without_manifest(tmp_path: Path) -> None:
-    assert _success_label(tmp_path, [{"case": "a", "target": 1}]) is None
+    assert _success_label(tmp_path) is None
+
+
+def test_success_label_none_on_partial_manifest(tmp_path: Path) -> None:
+    # A manifest that exists but lacks a count must degrade, not KeyError.
+    write_manifest(tmp_path, {"attack_attempts": 18})
+    assert _success_label(tmp_path) is None

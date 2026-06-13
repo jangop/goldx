@@ -81,14 +81,17 @@ KIND_COLORS = {
 
 
 def load_records(gold_directory: Path) -> list[dict[str, Any]]:
-    table = pq.read_table(gold_directory / RESULTS_FILENAME)
-    return table.to_pylist()
+    path = gold_directory / RESULTS_FILENAME
+    if not path.exists():
+        return []
+    return pq.read_table(path).to_pylist()
 
 
 def write_records(gold_directory: Path, records: list[dict[str, Any]]) -> None:
     if not records:
         logger.warning("no records to write")
         return
+    gold_directory.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(records, schema=RESULTS_SCHEMA)
     pq.write_table(table, gold_directory / RESULTS_FILENAME)
 
@@ -112,12 +115,25 @@ def _n_cases(records: list[dict[str, Any]]) -> int:
     return len({(r["case"], r["target"]) for r in records})
 
 
-def _success_label(gold_directory: Path, records: list[dict[str, Any]]) -> str | None:
-    """``"15/18"`` if a run manifest records the attempt count, else None."""
-    manifest = load_manifest(gold_directory)
+def _success_from_manifest(manifest: dict[str, Any] | None) -> str | None:
+    """``"15/18"`` = attacks that succeeded / attacks attempted, or None.
+
+    Uses the manifest's own ``attack_successes`` (attacks that produced a saved
+    adversarial) so the "attacks succeeded" wording is literally true — this is
+    distinct from the count of cases that later survived the PNG round trip to
+    reach scoring. Returns None if the manifest is absent or lacks either count.
+    """
     if manifest is None:
         return None
-    return f"{_n_cases(records)}/{manifest['attack_attempts']}"
+    successes = manifest.get("attack_successes")
+    attempts = manifest.get("attack_attempts")
+    if successes is None or attempts is None:
+        return None
+    return f"{successes}/{attempts}"
+
+
+def _success_label(gold_directory: Path) -> str | None:
+    return _success_from_manifest(load_manifest(gold_directory))
 
 
 def _amplified_difference(attacked: np.ndarray, original: np.ndarray) -> np.ndarray:
@@ -204,6 +220,8 @@ def render_case_figure(
 
 def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
     """Aggregate over all cases: bar chart + markdown table."""
+    manifest = load_manifest(gold_directory)
+    success = _success_from_manifest(manifest)
     by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records:
         by_method[record["method"]].append(record)
@@ -250,7 +268,6 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         ax.set_xlabel("IoU with ground-truth mask (mean ± std)")
         ax.set_xlim(0, 1)
         n_cases = _n_cases(records)
-        success = _success_label(gold_directory, records)
         title = f"GoldX summary — {n_cases} cases"
         if success is not None:
             title += f" ({success} attacks succeeded)"
@@ -260,14 +277,15 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
         plt.close(fig)
 
     lines = ["# GoldX Results", ""]
-    manifest = load_manifest(gold_directory)
-    if manifest is not None:
-        lines += [
-            f"**Attack success:** {n_cases}/{manifest['attack_attempts']} "
-            f"({manifest['source_images']} source images, "
-            f"{manifest['attacks_per_image']} attacks each).",
-            "",
-        ]
+    if success is not None and manifest is not None:
+        sources = manifest.get("source_images")
+        per_image = manifest.get("attacks_per_image")
+        detail = (
+            f" ({sources} source images, {per_image} attacks each)"
+            if sources is not None and per_image is not None
+            else ""
+        )
+        lines += [f"**Attack success:** {success}{detail}.", ""]
     lines += [
         "| Method | Kind | n | IoU | Relevance mass | Pixel AUC |",
         "|---|---|---|---|---|---|",
@@ -301,7 +319,7 @@ def render_comparison(
     success: dict[str, str | None] = {}
     for label, directory in named_directories.items():
         records = load_records(directory)
-        success[label] = _success_label(directory, records)
+        success[label] = _success_label(directory)
         by_method: dict[str, list[float]] = defaultdict(list)
         for record in records:
             by_method[record["method"]].append(float(record["iou"]))
