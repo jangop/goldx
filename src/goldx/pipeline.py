@@ -218,7 +218,7 @@ def compute_explanations(
     ``model`` must be the same [0, 1]-space model used for the attack. The
     attacked image is re-verified after the PNG round trip; cases where the
     attack no longer holds are skipped. Returns one record per
-    (case, target, heatmap) and writes them to ``results.csv``.
+    (case, target, heatmap) and writes them to ``results.parquet``.
     """
     device = next(model.parameters()).device
     records: list[dict[str, Any]] = []
@@ -278,9 +278,9 @@ def compute_explanations(
                         "target": target,
                         "method": name,
                         "kind": kind,
-                        "iou": intersection_over_union(top_k, mask_array),
-                        "relevance_mass": relevance_mass(heatmap, mask_array),
-                        "auc": pixel_auc(heatmap, mask_array),
+                        "iou": float(intersection_over_union(top_k, mask_array)),
+                        "relevance_mass": float(relevance_mass(heatmap, mask_array)),
+                        "auc": float(pixel_auc(heatmap, mask_array)),
                         "confidence": confidence,
                     }
                 )

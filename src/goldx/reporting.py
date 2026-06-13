@@ -2,11 +2,10 @@
 
 Per case: one figure showing original, attacked image, amplified perturbation,
 and every heatmap with the ground-truth mask outlined and its scores in the
-title. Per run: ``results.csv`` (written by the pipeline), ``summary.svg``
+title. Per run: ``results.parquet`` (written by the pipeline), ``summary.svg``
 (theme-aware), and ``RESULTS.md``.
 """
 
-import csv
 import io
 import logging
 import re
@@ -15,12 +14,30 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 from matplotlib import pyplot as plt
 from PIL import Image
 
 from .imagenet import CLASS_NAMES
 
 logger = logging.getLogger(__name__)
+
+# One scored explanation per row. Typed so the parquet round trip preserves
+# ints/floats instead of the everything-is-a-string CSV behaviour.
+RESULTS_SCHEMA = pa.schema(
+    [
+        ("case", pa.string()),
+        ("target", pa.int64()),
+        ("method", pa.string()),
+        ("kind", pa.string()),
+        ("iou", pa.float64()),
+        ("relevance_mass", pa.float64()),
+        ("auc", pa.float64()),
+        ("confidence", pa.float64()),
+    ]
+)
+RESULTS_FILENAME = "results.parquet"
 
 # Charts are saved as theme-aware SVGs: transparent background, all text and
 # axes drawn in this sentinel color, which is then rewritten to currentColor
@@ -62,19 +79,16 @@ KIND_COLORS = {
 
 
 def load_records(gold_directory: Path) -> list[dict[str, Any]]:
-    with (gold_directory / "results.csv").open(newline="") as f:
-        return list(csv.DictReader(f))
+    table = pq.read_table(gold_directory / RESULTS_FILENAME)
+    return table.to_pylist()
 
 
 def write_records(gold_directory: Path, records: list[dict[str, Any]]) -> None:
     if not records:
         logger.warning("no records to write")
         return
-    path = gold_directory / "results.csv"
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(records[0].keys()))
-        writer.writeheader()
-        writer.writerows(records)
+    table = pa.Table.from_pylist(records, schema=RESULTS_SCHEMA)
+    pq.write_table(table, gold_directory / RESULTS_FILENAME)
 
 
 def _amplified_difference(attacked: np.ndarray, original: np.ndarray) -> np.ndarray:

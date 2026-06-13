@@ -88,7 +88,7 @@ def main() -> None:
     run.set_defaults(handler=_run)
 
     report = subparsers.add_parser(
-        "report", help="re-render figures from an existing results.csv"
+        "report", help="re-render figures from an existing results.parquet"
     )
     report.add_argument("gold", type=Path)
     report.set_defaults(handler=_report)

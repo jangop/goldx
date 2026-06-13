@@ -37,7 +37,7 @@ $ uv run goldx compare r18=data/gold-r18 vit=data/gold-vit --output data
 ```
 
 `goldx run` writes everything into the gold directory (default `data/gold`):
-per-case artifacts and figures, `results.csv`, `RESULTS.md`, `summary.svg`.
+per-case artifacts and figures, `results.parquet`, `RESULTS.md`, `summary.svg`.
 Models: `resnet18`, `resnet50`, `vgg16`, `vit_b_16`.
 
 Each Captum method is evaluated in two regimes: **standard** (attribute the
@@ -91,7 +91,7 @@ Per-case view — green is the method's top-k selection, red the ground truth:
 ![](examples/bee-755-plot.png)
 ![](examples/snail-607-plot.png)
 
-Each run writes `results.csv`, `RESULTS.md`, `summary.svg`, and one such plot
+Each run writes `results.parquet`, `RESULTS.md`, `summary.svg`, and one such plot
 per case into the gold directory.
 
 [Göpfert et al. 2019]: https://arxiv.org/abs/1910.09239
