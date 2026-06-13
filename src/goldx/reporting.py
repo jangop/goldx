@@ -132,7 +132,12 @@ def render_case_figure(
             overlay = np.zeros((*top_k.shape, 4))
             overlay[top_k != 0] = (0.0, 0.8, 0.2, 0.45)
             ax.imshow(overlay)
-            ax.contour(mask, levels=[127], colors="red", linewidths=2.0)
+            # GT mask may load as bool (mode "1") or uint8 0/255 (mode "L");
+            # threshold to a 0/1 field and contour at 0.5 so the red outline
+            # fires regardless of how the mask was saved.
+            ax.contour(
+                (mask > 0).astype(float), levels=[0.5], colors="red", linewidths=2.0
+            )
 
             kind = str(record["kind"])
             suffix = f" ({kind})" if kind in BASELINE_KINDS else ""
