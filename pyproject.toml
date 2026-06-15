@@ -34,7 +34,7 @@ Source = "https://github.com/jangop/goldx"
 dev = [
     "basedpyright>=1.29",
     "commitizen>=4",
-    "pre-commit>=4",
+    "lefthook>=2.1",
     "pytest>=8",
     "ruff>=0.14",
 ]

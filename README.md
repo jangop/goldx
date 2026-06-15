@@ -48,7 +48,7 @@ actually answers).
 Development:
 
 ```console
-$ uv run pre-commit install
+$ uv run lefthook install
 $ uv run pytest
 ```
 

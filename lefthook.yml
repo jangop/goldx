@@ -1,0 +1,26 @@
+# Hooks call uv-managed tools, so every version stays single-sourced in uv.lock.
+# Onboard: `uv sync && uv run lefthook install`.
+pre-commit:
+  parallel: true
+  commands:
+    ruff-check:
+      glob: "*.py"
+      run: uv run ruff check --fix {staged_files}
+      stage_fixed: true
+    ruff-format:
+      glob: "*.py"
+      run: uv run ruff format {staged_files}
+      stage_fixed: true
+    basedpyright:
+      glob: "*.py"
+      run: uv run basedpyright
+
+pre-push:
+  commands:
+    tests:
+      run: uv run pytest
+
+commit-msg:
+  commands:
+    commitizen:
+      run: uv run cz check --commit-msg-file {1}
