@@ -20,9 +20,7 @@ def generate_mask(
     max_radius = math.sqrt(image_area * max_area / math.pi)
 
     if 2 * max_radius > min(width, height):
-        raise ValueError(
-            f"max_area={max_area} does not fit a circle into {width}x{height}"
-        )
+        raise ValueError(f"max_area={max_area} does not fit a circle into {width}x{height}")
 
     radius = random.randint(int(min_radius), int(max_radius))
     center_x = random.randint(radius, width - radius)

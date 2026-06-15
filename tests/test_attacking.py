@@ -44,9 +44,7 @@ def test_attack_can_succeed_on_easy_target():
         label = model(image).argmax(dim=1)
     target = torch.tensor([1 - label.item()])
 
-    _, success = attack_image_with_mask(
-        model, image, target, mask, epsilon=0.5, steps=50
-    )
+    _, success = attack_image_with_mask(model, image, target, mask, epsilon=0.5, steps=50)
     assert success
 
 

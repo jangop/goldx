@@ -14,9 +14,9 @@ import numpy as np
 import torch
 from torch.nn import functional
 
-LAPLACIAN_KERNEL = torch.tensor(
-    [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]]
-).reshape(1, 1, 3, 3)
+LAPLACIAN_KERNEL = torch.tensor([[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]]).reshape(
+    1, 1, 3, 3
+)
 
 
 def _normalize(heatmap: np.ndarray) -> np.ndarray:
@@ -26,9 +26,7 @@ def _normalize(heatmap: np.ndarray) -> np.ndarray:
     return heatmap / maximum
 
 
-def random_heatmap(
-    height: int, width: int, rng: np.random.Generator | None = None
-) -> np.ndarray:
+def random_heatmap(height: int, width: int, rng: np.random.Generator | None = None) -> np.ndarray:
     """Uniform random heatmap — the chance-level floor."""
     if rng is None:
         rng = np.random.default_rng()

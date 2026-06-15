@@ -56,13 +56,9 @@ def _resize_and_crop(image: Image.Image, size: int) -> Image.Image:
     """Resize so the shorter side is ``size``, then crop the center square."""
     width, height = image.size
     if width < height:
-        image = image.resize(
-            (size, round(height * size / width)), Image.Resampling.LANCZOS
-        )
+        image = image.resize((size, round(height * size / width)), Image.Resampling.LANCZOS)
     else:
-        image = image.resize(
-            (round(width * size / height), size), Image.Resampling.LANCZOS
-        )
+        image = image.resize((round(width * size / height), size), Image.Resampling.LANCZOS)
 
     width, height = image.size
     left = (width - size) // 2
@@ -136,9 +132,7 @@ def prepare_ground_truths(
                     quantized_prediction = int(model(quantized).argmax(dim=1).item())
                 if quantized_prediction == target_label:
                     break
-                logger.info(
-                    "attack on %s undone by quantization, retrying", file_path.name
-                )
+                logger.info("attack on %s undone by quantization, retrying", file_path.name)
             else:
                 logger.warning(
                     "no successful attack for %s after %d attempts",
@@ -157,9 +151,7 @@ def prepare_ground_truths(
             (case_directory / "original-label.txt").write_text(CLASS_NAMES[label])
             attacked_image.save(case_directory / f"{target_label}-attacked.png")
             mask.save(case_directory / f"{target_label}-mask.png")
-            (case_directory / f"{target_label}-label.txt").write_text(
-                CLASS_NAMES[target_label]
-            )
+            (case_directory / f"{target_label}-label.txt").write_text(CLASS_NAMES[target_label])
 
         attack_successes += successes
         logger.info(
@@ -200,9 +192,7 @@ def _case_heatmaps(
     for method, args in EXPLANATION_METHODS:
         heatmaps[method.__name__] = (
             "method",
-            explain(
-                method=method, model=model, inputs=batch, targets=target, args=args
-            ),
+            explain(method=method, model=model, inputs=batch, targets=target, args=args),
         )
         heatmaps[f"Contrastive{method.__name__}"] = (
             "contrastive",
@@ -224,9 +214,7 @@ def _case_heatmaps(
     return heatmaps
 
 
-def compute_explanations(
-    *, model: torch.nn.Module, gold_directory: Path
-) -> list[dict[str, Any]]:
+def compute_explanations(*, model: torch.nn.Module, gold_directory: Path) -> list[dict[str, Any]]:
     """Explain each attacked image and score everything against its mask.
 
     ``model`` must be the same [0, 1]-space model used for the attack. The
@@ -245,9 +233,9 @@ def compute_explanations(
 
             attacked_image = Image.open(image_path).convert("RGB")
             batch = _to_tensor(attacked_image).unsqueeze(0).to(device)
-            original = _to_tensor(
-                Image.open(case_directory / "original.png").convert("RGB")
-            ).to(device)
+            original = _to_tensor(Image.open(case_directory / "original.png").convert("RGB")).to(
+                device
+            )
 
             with torch.no_grad():
                 probabilities = model(batch).softmax(dim=1).squeeze(0)
@@ -282,9 +270,7 @@ def compute_explanations(
 
                 # Binarize: brightest k pixels, k = ground-truth mask size.
                 top_k = mask_matrix(heatmap, k=n_pixels_in_mask)
-                Image.fromarray(top_k, mode="L").save(
-                    case_directory / f"{target}-{name}-mask.png"
-                )
+                Image.fromarray(top_k, mode="L").save(case_directory / f"{target}-{name}-mask.png")
 
                 records.append(
                     {

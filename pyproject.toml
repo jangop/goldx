@@ -5,7 +5,7 @@ description = "Ground-truth explanations for visual classifiers"
 readme = "README.md"
 authors = [{ name = "Jan Philip Göpfert", email = "janphilip@gopfert.eu" }]
 license = "Unlicense"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 keywords = ["machine-learning", "explainability", "xai", "adversarial"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -53,7 +53,8 @@ torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]
 
 [tool.ruff]
-target-version = "py312"
+# target-version inferred from project.requires-python (single source).
+line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "PTH"]

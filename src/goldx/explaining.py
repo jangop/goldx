@@ -26,9 +26,7 @@ class ContrastiveLogit(torch.nn.Module):
         return (logits[:, self.target] - logits[:, self.reference]).unsqueeze(1)
 
 
-def normalize_attributions(
-    attributions: np.ndarray, *, percentile: float = 98.0
-) -> np.ndarray:
+def normalize_attributions(attributions: np.ndarray, *, percentile: float = 98.0) -> np.ndarray:
     """Reduce channel-wise attributions to a single [0, 1] heatmap.
 
     Keeps positive evidence only, sums over channels, and scales by the given
@@ -57,10 +55,6 @@ def explain(
     """
     explainer = method(model)
     attributions = (
-        explainer.attribute(inputs, target=targets, **args)
-        .squeeze(0)
-        .detach()
-        .cpu()
-        .numpy()
+        explainer.attribute(inputs, target=targets, **args).squeeze(0).detach().cpu().numpy()
     )
     return normalize_attributions(attributions)

@@ -93,9 +93,7 @@ def main() -> None:
     report.add_argument("gold", type=Path)
     report.set_defaults(handler=_report)
 
-    compare = subparsers.add_parser(
-        "compare", help="cross-model comparison from finished runs"
-    )
+    compare = subparsers.add_parser("compare", help="cross-model comparison from finished runs")
     compare.add_argument(
         "runs", nargs="+", metavar="LABEL=GOLD_DIR", help="e.g. resnet18=data/gold-r18"
     )

@@ -47,10 +47,7 @@ MANIFEST_FILENAME = "run.json"
 # both light and dark mode.
 _SENTINEL_COLOR = "#010203"
 _THEME_STYLE = (
-    "<style>"
-    ":root{color:#1f2328}"
-    "@media (prefers-color-scheme:dark){:root{color:#e6edf3}}"
-    "</style>"
+    "<style>:root{color:#1f2328}@media (prefers-color-scheme:dark){:root{color:#e6edf3}}</style>"
 )
 _CHART_RC: dict[Any, Any] = {
     "text.color": _SENTINEL_COLOR,
@@ -98,9 +95,7 @@ def write_records(gold_directory: Path, records: list[dict[str, Any]]) -> None:
 
 def write_manifest(gold_directory: Path, manifest: dict[str, Any]) -> None:
     gold_directory.mkdir(parents=True, exist_ok=True)
-    (gold_directory / MANIFEST_FILENAME).write_text(
-        json.dumps(manifest, indent=2) + "\n"
-    )
+    (gold_directory / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def load_manifest(gold_directory: Path) -> dict[str, Any] | None:
@@ -145,9 +140,7 @@ def _amplified_difference(attacked: np.ndarray, original: np.ndarray) -> np.ndar
     return (difference.sum(axis=2) / (2 * magnitude * 3)) + 0.5
 
 
-def render_case_figure(
-    *, directory: Path, target: int, records: list[dict[str, Any]]
-) -> None:
+def render_case_figure(*, directory: Path, target: int, records: list[dict[str, Any]]) -> None:
     """One figure per (case, target): context row on top, heatmap row below."""
     original = np.array(Image.open(directory / "original.png"))
     attacked = np.array(Image.open(directory / f"{target}-attacked.png"))
@@ -160,9 +153,7 @@ def render_case_figure(
 
     # Mid-gray text reads on both GitHub themes; background stays transparent.
     with plt.rc_context({"text.color": "#888888"}):
-        fig, axes = plt.subplots(
-            nrows=2, ncols=n_columns, figsize=(n_columns * 2.6, 5.8)
-        )
+        fig, axes = plt.subplots(nrows=2, ncols=n_columns, figsize=(n_columns * 2.6, 5.8))
         for ax in axes.flat:
             ax.axis("off")
 
@@ -194,9 +185,7 @@ def render_case_figure(
             # GT mask may load as bool (mode "1") or uint8 0/255 (mode "L");
             # threshold to a 0/1 field and contour at 0.5 so the red outline
             # fires regardless of how the mask was saved.
-            ax.contour(
-                (mask > 0).astype(float), levels=[0.5], colors="red", linewidths=2.0
-            )
+            ax.contour((mask > 0).astype(float), levels=[0.5], colors="red", linewidths=2.0)
 
             kind = str(record["kind"])
             suffix = f" ({kind})" if kind in BASELINE_KINDS else ""
@@ -209,8 +198,7 @@ def render_case_figure(
             )
 
         fig.suptitle(
-            f"{directory.name} → {target_label}   "
-            "(green = method top-k, red = ground truth)",
+            f"{directory.name} → {target_label}   (green = method top-k, red = ground truth)",
             fontsize=10,
         )
         fig.tight_layout()
@@ -306,9 +294,7 @@ def render_summary(gold_directory: Path, records: list[dict[str, Any]]) -> None:
     (gold_directory / "RESULTS.md").write_text("\n".join(lines) + "\n")
 
 
-def render_comparison(
-    named_directories: dict[str, Path], output_directory: Path
-) -> None:
+def render_comparison(named_directories: dict[str, Path], output_directory: Path) -> None:
     """Cross-model comparison from finished runs: grouped bars + table.
 
     ``named_directories`` maps a display label (e.g. model name) to the gold
@@ -336,11 +322,7 @@ def render_comparison(
     methods = sorted(
         {method for summary in summaries.values() for method in summary},
         key=lambda method: np.mean(
-            [
-                summary[method]["mean"]
-                for summary in summaries.values()
-                if method in summary
-            ]
+            [summary[method]["mean"] for summary in summaries.values() if method in summary]
         ),
     )
     labels = list(summaries)
@@ -354,8 +336,7 @@ def render_comparison(
         bar_height = 0.8 / len(labels)
         for column, label in enumerate(labels):
             positions = [
-                i + (column - (len(labels) - 1) / 2) * bar_height
-                for i in range(len(methods))
+                i + (column - (len(labels) - 1) / 2) * bar_height for i in range(len(methods))
             ]
             means = [summaries[label].get(m, {}).get("mean", 0.0) for m in methods]
             stds = [summaries[label].get(m, {}).get("std", 0.0) for m in methods]
@@ -389,20 +370,14 @@ def render_comparison(
         for label in labels:
             entry = summaries[label].get(method)
             cells.append(
-                f"{entry['mean']:.3f} ± {entry['std']:.3f} (n={entry['n']})"
-                if entry
-                else "—"
+                f"{entry['mean']:.3f} ± {entry['std']:.3f} (n={entry['n']})" if entry else "—"
             )
-        lines.append(
-            f"| {method} | {kinds.get(method, '?')} | " + " | ".join(cells) + " |"
-        )
+        lines.append(f"| {method} | {kinds.get(method, '?')} | " + " | ".join(cells) + " |")
     lines += ["", "![comparison](comparison.svg)"]
     (output_directory / "COMPARISON.md").write_text("\n".join(lines) + "\n")
 
 
-def render_report(
-    gold_directory: Path, records: list[dict[str, Any]] | None = None
-) -> None:
+def render_report(gold_directory: Path, records: list[dict[str, Any]] | None = None) -> None:
     if records is None:
         records = load_records(gold_directory)
     if not records:
@@ -414,8 +389,6 @@ def render_report(
         by_case_target[(str(record["case"]), int(record["target"]))].append(record)
 
     for (case, target), group in sorted(by_case_target.items()):
-        render_case_figure(
-            directory=gold_directory / case, target=target, records=group
-        )
+        render_case_figure(directory=gold_directory / case, target=target, records=group)
 
     render_summary(gold_directory, records)
