@@ -64,7 +64,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "PTH"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
