@@ -394,26 +394,6 @@
                 }
             }
         ],
-        "./tests/test_explaining.py": [
-            {
-                "code": "reportUnknownMemberType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_metrics_extra.py": [
-            {
-                "code": "reportUnknownMemberType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 52,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_reporting.py": [
             {
                 "code": "reportPrivateUsage",
